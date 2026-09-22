@@ -71,8 +71,8 @@ It's a pure runtime memory patch:
 
 In testing, this converted several restore sessions that previously ended
 with files permanently marked `Unavailable` (after 3+ separate attempts
-each) into 100%-successful restores, including a 53.74GB 2160p remux that
-had failed on every previous attempt.
+each) into 100%-successful restores, including a single 50GB+ file that
+had failed on 7 previous attempts.
 
 ## How it was found (summary)
 
