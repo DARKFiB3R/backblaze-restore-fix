@@ -138,7 +138,7 @@ function main() {
         if (!isOurCallSite) {
           ignoredSameContentDifferentSite++;
           ignoredSinceLastStatus++;
-          if (ignoredSameContentDifferentSite <= 3) {
+          if (ignoredSameContentDifferentSite === 1) {
             console.log(`[filter working] ignoring "Unavailable" assign from an unrelated call site (return=${this.returnAddress}) - this is expected background noise, not touched`);
           }
           return;
