@@ -107,7 +107,10 @@ function main() {
   const STATUS_INTERVAL_MS = 60000;
   const statusTimer = setInterval(() => {
     if (ignoredSinceLastStatus > 0 || hitCount > 0) {
-      console.log(`[status] ${new Date().toLocaleTimeString()} - ${ignoredSinceLastStatus} unrelated assigns filtered out in the last minute, ${hitCount} genuine hit(s) total so far`);
+      const verdict = hitCount > 0
+        ? `${hitCount} chunk(s) rescued from Unavailable so far`
+        : `all clear - nothing has needed rescuing yet`;
+      console.log(`[status] ${new Date().toLocaleTimeString()} - watching (${ignoredSinceLastStatus} routine checks this minute) - ${verdict}`);
       ignoredSinceLastStatus = 0;
     }
   }, STATUS_INTERVAL_MS);
