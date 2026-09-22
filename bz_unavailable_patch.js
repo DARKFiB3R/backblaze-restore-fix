@@ -26,15 +26,25 @@
  * "retry" verdict, using the client's own existing (and apparently more
  * reliable) retry logic, instead of ever letting it give up permanently.
  *
+ * Both state strings are written through the same generic string-assign
+ * helper (matches std::string::assign(this=RCX, data=RDX, len=R8) under
+ * the MS x64 calling convention). That helper is called from MANY places
+ * in the binary for unrelated strings - including a periodic UI/
+ * bookkeeping refresh path that keeps re-touching already-known-bad
+ * chunks. Filtering on string content alone fires thousands of times per
+ * session purely from that refresh loop re-asserting already-terminal
+ * chunks - which, once live-patching, appeared to corrupt the app's
+ * internal remaining-chunk counters (observed a "18446744073709551615
+ * files" unsigned-underflow in the live UI). So this script filters on
+ * the CALLER too, not just content - see the Gotchas section in README.md
+ * for how to re-derive the addresses for a different build.
+ *
  * IMPORTANT SAFETY NOTES:
  * - This never modifies bzrestore.exe on disk. It's a runtime memory patch
  *   only, and must be re-applied every time the process is (re)launched.
  * - Start with DRY_RUN = true and confirm it fires a SANE number of times
  *   (roughly once per genuine failed chunk, not thousands) before
- *   flipping to false. See README.md for why this matters - an earlier,
- *   less careful version of this hook fired 5000+ times per session from
- *   an unrelated code path and appeared to destabilize the app's internal
- *   counters when live.
+ *   flipping to false.
  * - Test on a small/low-stakes restore before trusting it with anything
  *   irreplaceable.
  *
@@ -55,8 +65,8 @@ const MODULE_NAME = 'bzrestore.exe';
 
 // --- Addresses specific to v10.0.3.1075 - re-derive for other versions, see README ---
 const STATIC_IMAGE_BASE = ptr('0x140000000');
-const STATIC_FUNC_ADDR = ptr('0x140012680'); // generic string-assign helper (matches std::string::assign(this=RCX, data=RDX, len=R8), MS x64 ABI)
-const STATIC_CALL_SITE_RETURN_ADDR = ptr('0x140187c6b'); // return address right after the specific CALL inside HandleResponseChunk's "unavailable" branch
+const STATIC_FUNC_ADDR = ptr('0x140012680'); // generic string-assign helper
+const STATIC_CALL_SITE_RETURN_ADDR = ptr('0x140187c6b'); // return addr right after the specific CALL in HandleResponseChunk's "unavailable" branch
 // ---------------------------------------------------------------------------------
 
 const TARGET_OLD = 'Unavailable';
@@ -87,6 +97,20 @@ function main() {
 
   let hitCount = 0;
   let ignoredSameContentDifferentSite = 0;
+  let ignoredSinceLastStatus = 0;
+
+  // A restore can touch tens of thousands of chunks, and the refresh-loop
+  // noise scales with that - a per-call heartbeat gets absurdly spammy on a
+  // large batch. Print a quiet one-time proof it's filtering correctly, then
+  // just a single status line periodically (time-based, not count-based, so
+  // it doesn't scale with batch size).
+  const STATUS_INTERVAL_MS = 60000;
+  const statusTimer = setInterval(() => {
+    if (ignoredSinceLastStatus > 0 || hitCount > 0) {
+      console.log(`[status] ${new Date().toLocaleTimeString()} - ${ignoredSinceLastStatus} unrelated assigns filtered out in the last minute, ${hitCount} genuine hit(s) total so far`);
+      ignoredSinceLastStatus = 0;
+    }
+  }, STATUS_INTERVAL_MS);
 
   Interceptor.attach(runtimeAddr, {
     onEnter(args) {
@@ -105,24 +129,20 @@ function main() {
         }
         if (text !== TARGET_OLD) return;
 
-        // Content matches "Unavailable" - now check the caller. This shared
-        // helper is called from ~20 places for unrelated strings, including
-        // a periodic UI/bookkeeping refresh loop that re-touches already
-        // known-bad chunks constantly - filtering on content alone fires
-        // thousands of times. Filtering on the caller too isolates just the
-        // genuine "server just told me this chunk is unavailable" moment.
+        // Content matches "Unavailable" - now check the caller.
         const isOurCallSite = this.returnAddress.equals(runtimeCallSiteReturn);
 
         if (!isOurCallSite) {
           ignoredSameContentDifferentSite++;
-          if (ignoredSameContentDifferentSite <= 5 || ignoredSameContentDifferentSite % 500 === 0) {
-            console.log(`[ignored #${ignoredSameContentDifferentSite}] "Unavailable" assign from OTHER call site (return=${this.returnAddress}) - not touching`);
+          ignoredSinceLastStatus++;
+          if (ignoredSameContentDifferentSite <= 3) {
+            console.log(`[filter working] ignoring "Unavailable" assign from an unrelated call site (return=${this.returnAddress}) - this is expected background noise, not touched`);
           }
           return;
         }
 
         hitCount++;
-        console.log(`[HIT #${hitCount}] Genuine "Unavailable" chunk-state assign intercepted` +
+        console.log(`[HIT #${hitCount}] Genuine HandleResponseChunk "Unavailable" assign intercepted` +
                      (DRY_RUN ? ' (dry-run, not modified)' : ` -> rewriting to "${TARGET_NEW}"`));
 
         if (!DRY_RUN) {
