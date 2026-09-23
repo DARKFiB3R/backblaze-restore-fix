@@ -95,9 +95,20 @@ function main() {
   const newStrBuf = Memory.allocUtf8String(TARGET_NEW);
   const newStrLen = ptr(TARGET_NEW.length);
 
-  let hitCount = 0;
+  let hitCount = 0; // lifetime total since this hook was attached
+  let sessionHitCount = 0; // resets when a new restore batch is detected
   let ignoredSameContentDifferentSite = 0;
   let ignoredSinceLastStatus = 0;
+
+  // The hook has no official "a new restore session just started" signal,
+  // but empirically there's a reliable one: selecting a new batch causes a
+  // massive one-time spike in routine background checks (tens of thousands
+  // in a single minute, vs. a normal ~150-350/min baseline) as the app
+  // rebuilds tracking state for the newly selected chunks. Use that spike
+  // to reset the per-session counter, so it stays comparable to
+  // bzrestore.log's own per-session "Unavailable" tally instead of drifting
+  // into a lifetime total that no longer lines up with any one session.
+  const NEW_SESSION_SPIKE_THRESHOLD = 5000;
 
   // A restore can touch tens of thousands of chunks, and the refresh-loop
   // noise scales with that - a per-call heartbeat gets absurdly spammy on a
@@ -106,10 +117,16 @@ function main() {
   // it doesn't scale with batch size).
   const STATUS_INTERVAL_MS = 60000;
   const statusTimer = setInterval(() => {
+    if (ignoredSinceLastStatus >= NEW_SESSION_SPIKE_THRESHOLD) {
+      if (sessionHitCount > 0) {
+        console.log(`[new session detected] resetting session counter (was ${sessionHitCount}, lifetime total stays at ${hitCount})`);
+      }
+      sessionHitCount = 0;
+    }
     if (ignoredSinceLastStatus > 0 || hitCount > 0) {
-      const verdict = hitCount > 0
-        ? `${hitCount} chunk(s) rescued from Unavailable so far`
-        : `all clear - nothing has needed rescuing yet`;
+      const verdict = sessionHitCount > 0
+        ? `${sessionHitCount} chunk(s) rescued this session (${hitCount} lifetime)`
+        : `all clear this session - nothing has needed rescuing yet (${hitCount} lifetime)`;
       console.log(`[status] ${new Date().toLocaleTimeString()} - watching (${ignoredSinceLastStatus} routine checks this minute) - ${verdict}`);
       ignoredSinceLastStatus = 0;
     }
@@ -145,6 +162,7 @@ function main() {
         }
 
         hitCount++;
+        sessionHitCount++;
         console.log(`[HIT #${hitCount}] Genuine HandleResponseChunk "Unavailable" assign intercepted` +
                      (DRY_RUN ? ' (dry-run, not modified)' : ` -> rewriting to "${TARGET_NEW}"`));
 
